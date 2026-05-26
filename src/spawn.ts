@@ -113,7 +113,11 @@ export async function spawn(
   };
 
   // 4. Resolve placement. Four variants supported:
-  //    - RelativePlacement: split caller's pane (handled inline by launchAgent's splitInCallerWorkspace)
+  //    - RelativePlacement: anchor pane resolved from `near` (pane name or agent
+  //      name) → createPane + attachAgent POST-launch. Earlier versions used
+  //      crew's splitInCallerWorkspace mechanism but that's cmux-only — iTerm
+  //      silently no-ops, stranding the agent headless (eclair/beignet/
+  //      profiterole on 2026-05-26).
   //    - ExplicitPlacement: pane inside a specific tab — created POST-launch, then attachAgent
   //    - NewTabPlacement: new tab in (current) workspace — created POST-launch, then attachAgent
   //    - NewWorkspacePlacement: new workspace (cmux) / window (iTerm) — approximated as a new tab POST-launch
@@ -121,16 +125,31 @@ export async function spawn(
   // Detached (any variant): skip pane creation/attach entirely.
   const placement = opts.placement;
   const detached = placement && "detached" in placement && placement.detached === true;
-  let split: { direction: "right" | "down" } | undefined;
   // Post-launch placement: { tab name to attach to, optional pane name to attach to }
   let post_launch_attach: { tab: string; pane?: string } | undefined;
 
   if (placement && !detached) {
     if ("near" in placement) {
-      split = {
-        direction:
-          placement.direction === "right" || placement.direction === "left" ? "right" : "down",
-      };
+      // Resolve `near` to an anchor pane (pane name OR agent name → agent's
+      // attached pane). Then use the same createPane + attachAgent path as
+      // explicit placement.
+      let anchorPane = deps.orchestrator.store.getPane(placement.near);
+      if (!anchorPane) {
+        const anchorAgent = deps.orchestrator.store.getAgent(placement.near);
+        if (anchorAgent?.pane) anchorPane = deps.orchestrator.store.getPane(anchorAgent.pane);
+      }
+      if (!anchorPane) {
+        throw new Error(
+          `spawn: near='${placement.near}' is neither a pane name nor an agent attached to a pane`,
+        );
+      }
+      const new_pane = await deps.orchestrator.createPane(
+        anchorPane.tab,
+        undefined,
+        placement.direction,
+        anchorPane.name,
+      );
+      post_launch_attach = { tab: anchorPane.tab, pane: new_pane.name };
     } else if ("relative_to" in placement) {
       const tab = deps.orchestrator.store.getTab(placement.tab);
       if (!tab) throw new Error(`spawn: explicit placement tab '${placement.tab}' does not exist`);
@@ -159,15 +178,13 @@ export async function spawn(
     }
   }
 
-  // 5. Crew launchAgent. For RelativePlacement we use splitInCallerWorkspace;
-  //    for other placement variants the pane was pre-created in step 4 and we
-  //    attach POST-launch.
+  // 5. Crew launchAgent. All placement variants (including `near`) pre-create
+  //    the pane in step 4; we attach POST-launch below.
   const launched = await deps.orchestrator.launchAgent({
     env,
     runtime: opts.runtime,
     projectDir: opts.project_dir,
     prompt: opts.task,
-    splitInCallerWorkspace: split,
   });
 
   if (post_launch_attach?.pane) {
