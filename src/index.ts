@@ -20,6 +20,7 @@ export type {
 } from "./types.js";
 
 export { spawn, type SpawnDeps } from "./spawn.js";
+export { ensureWorktree } from "./worktree.js";
 export { handoff, type HandoffOptions, type HandoffResult, type HandoffDeps } from "./handoff.js";
 export { paneNear, type PaneNearOptions, type PaneNearResult, type PaneNearDeps } from "./pane-near.js";
 export { close, type CloseOptions, type CloseResult, type CloseDeps } from "./close.js";

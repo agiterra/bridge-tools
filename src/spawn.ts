@@ -33,6 +33,7 @@ import type {
   BridgeHook,
   BridgeHookContribution,
 } from "./types.js";
+import { ensureWorktree } from "./worktree.js";
 
 import { Orchestrator } from "@agiterra/crew-tools";
 import {
@@ -189,12 +190,26 @@ export async function spawn(
     }
   }
 
+  // 4b. Worktree isolation. When `branch` is set and `worktree !== false`,
+  //     create `<project_dir>/worktrees/<branch>` so concurrent agents in
+  //     the same repo don't clobber each other's uncommitted work via git
+  //     checkout. Brioche's 2026-05-26 incident: Eclair (ENG-3180) and
+  //     Profiterole (ENG-3205) shared fabrica-v3-api project_dir; Profiterole's
+  //     checkout discarded ~600 lines of Eclair's uncommitted code.
+  let resolved_project_dir = opts.project_dir;
+  if (opts.branch && opts.worktree !== false && opts.project_dir) {
+    resolved_project_dir = await ensureWorktree(opts.project_dir, opts.branch);
+    env.AGENT_BRANCH = opts.branch;
+  } else if (opts.branch) {
+    env.AGENT_BRANCH = opts.branch;
+  }
+
   // 5. Crew launchAgent. All placement variants (including `near`) pre-create
   //    the pane in step 4; we attach POST-launch below.
   const launched = await deps.orchestrator.launchAgent({
     env,
     runtime: opts.runtime,
-    projectDir: opts.project_dir,
+    projectDir: resolved_project_dir,
     prompt: opts.task,
     badge: opts.badge,
   });
