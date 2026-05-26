@@ -101,14 +101,25 @@ export async function spawn(
 
   // 3. Assemble env. Precedence (lowest → highest): hook contributions,
   //    bridge-required identity vars, per-spawn env overrides.
+  //
+  // KNOWLEDGE_ENRICH_RULES default: the spawned ephemeral auto-drains IPCs
+  // from its parent into context (via knowledge plugin's channel-enrichment
+  // UserPromptSubmit hook). Without this, ephemerals could SEND IPCs but
+  // wouldn't react to inbound — Brioche's 2026-05-26 spawn batch (eclair,
+  // beignet, profiterole, tarte) hit this and sat idle at bare prompts
+  // while Brioche's IPCs piled up unread. Macaron (resumed via crew
+  // agent_resume, env hand-assembled) had this set and worked correctly.
+  // Per-spawn env overrides can still replace this default.
+  const parent_id = opts.sponsor?.parent_identity ?? deps.parent_agent_id;
   const env: Record<string, string> = {
     ...hook_env,
     AGENT_ID: new_agent_id,
     AGENT_NAME: display_name,
     AGENT_PRIVATE_KEY: new_privkey_b64,
-    AGENT_PARENT: opts.sponsor?.parent_identity ?? deps.parent_agent_id,
+    AGENT_PARENT: parent_id,
     AGENT_ROLES: opts.roles.join(","),
     WIRE_URL: deps.wire_url,
+    KNOWLEDGE_ENRICH_RULES: JSON.stringify({ ipc: { from: [parent_id] } }),
     ...(opts.env ?? {}),
   };
 
@@ -185,6 +196,7 @@ export async function spawn(
     runtime: opts.runtime,
     projectDir: opts.project_dir,
     prompt: opts.task,
+    badge: opts.badge,
   });
 
   if (post_launch_attach?.pane) {

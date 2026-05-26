@@ -70,6 +70,8 @@ export interface SpawnOptions {
   runtime?: string;
   /** Working directory for the spawned process. Forwarded to crew.launchAgent. */
   project_dir?: string;
+  /** Optional badge text displayed in the pane's top-right when attached. Forwarded to crew.launchAgent. */
+  badge?: string;
 }
 
 /** Result of a successful spawn. */
