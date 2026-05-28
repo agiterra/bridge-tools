@@ -33,7 +33,7 @@ import type {
   BridgeHook,
   BridgeHookContribution,
 } from "./types.js";
-import { ensureWorktree } from "./worktree.js";
+import { ensureWorktree, copyWorktreeConfig, defaultWorktreeConfigFiles } from "./worktree.js";
 import { ensureWireInstalledForPath } from "./installed_plugins.js";
 
 import { Orchestrator } from "@agiterra/crew-tools";
@@ -49,8 +49,16 @@ import {
 export interface SpawnDeps {
   /** Crew orchestrator instance. Holds the terminal backend + state DB. */
   orchestrator: Orchestrator;
-  /** Wire server URL (e.g., "https://the-wire.ngrok.io"). */
+  /** Wire server URL (e.g., "http://localhost:9800"). Routed to the local broker for low-latency outbound. */
   wire_url: string;
+  /**
+   * Externally-reachable Wire URL (e.g. "https://the-wire.ngrok.io").
+   * Plugins that advertise webhook URLs to external services
+   * (github-tools/register_pr_webhook, slack-tools/register_slack_app)
+   * use this. Falls back to `wire_url` if the host doesn't set it,
+   * which is the right behavior on machines without an ngrok tunnel.
+   */
+  wire_external_url?: string;
   /** Orchestrator's agent ID — used as the sponsoring identity for the new ephemeral. */
   parent_agent_id: string;
   /** Orchestrator's signing key — signs the registration request. */
@@ -121,6 +129,12 @@ export async function spawn(
     AGENT_PARENT: parent_id,
     AGENT_ROLES: opts.roles.join(","),
     WIRE_URL: deps.wire_url,
+    // Plugins that advertise webhook URLs to external services need the
+    // public Wire URL — register_pr_webhook returned a localhost callback
+    // before this propagation and GitHub rejected with 422 (Brioche 2026-
+    // 05-28 papercut #1). Default to WIRE_URL if no external URL is set,
+    // which is correct for setups without an ngrok tunnel.
+    WIRE_EXTERNAL_URL: deps.wire_external_url ?? deps.wire_url,
     KNOWLEDGE_ENRICH_RULES: JSON.stringify({ ipc: { from: [parent_id] } }),
     ...(opts.env ?? {}),
   };
@@ -201,6 +215,18 @@ export async function spawn(
   if (opts.branch && opts.worktree !== false && opts.project_dir) {
     resolved_project_dir = await ensureWorktree(opts.project_dir, opts.branch);
     env.AGENT_BRANCH = opts.branch;
+    // Copy known gitignored config (sops keys, local overrides) from the
+    // parent project into the new worktree. fabrica-v3-api spawns hit
+    // this 2026-05-28: services with module-load sops-decrypt threw on
+    // any spec import until the engineer manually copied the files.
+    const configFiles = defaultWorktreeConfigFiles(opts.project_dir);
+    if (configFiles.length > 0) {
+      try {
+        await copyWorktreeConfig(opts.project_dir, resolved_project_dir, configFiles);
+      } catch (e) {
+        console.error(`[bridge.spawn] copyWorktreeConfig failed for '${resolved_project_dir}':`, e);
+      }
+    }
   } else if (opts.branch) {
     env.AGENT_BRANCH = opts.branch;
   }

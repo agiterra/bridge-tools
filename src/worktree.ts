@@ -94,3 +94,67 @@ export async function ensureWorktree(projectDir: string, branch: string): Promis
 
   return worktreePath;
 }
+
+/**
+ * Copy a list of gitignored config files from the parent project's main
+ * worktree into a freshly-created worktree. Git worktree-add never
+ * copies gitignored files, but some projects (notably fabrica-v3-api)
+ * have services that eager-decrypt sops config at module load — without
+ * the keys/config present, any spec that imports such a service throws
+ * at load time and the engineer can't run a single test until they
+ * manually copy from the main checkout.
+ *
+ * The list of files is provided by the caller (or via bridge spawn
+ * defaults below). Each entry is a path relative to the project root.
+ * Missing source files are skipped silently — only present files get
+ * copied. Idempotent: overwrites the destination unconditionally so a
+ * post-creation re-sync is always safe.
+ */
+export async function copyWorktreeConfig(
+  projectDir: string,
+  worktreePath: string,
+  files: readonly string[],
+): Promise<{ copied: string[]; skipped: string[] }> {
+  const { copyFileSync, mkdirSync, existsSync: exists } = await import("fs");
+  const { dirname } = await import("path");
+  const copied: string[] = [];
+  const skipped: string[] = [];
+  for (const rel of files) {
+    const src = join(projectDir, rel);
+    const dst = join(worktreePath, rel);
+    if (!exists(src)) {
+      skipped.push(rel);
+      continue;
+    }
+    const dstDir = dirname(dst);
+    if (!exists(dstDir)) mkdirSync(dstDir, { recursive: true });
+    try {
+      copyFileSync(src, dst);
+      copied.push(rel);
+    } catch (e) {
+      // Don't fail the whole spawn on one bad copy — surface and continue.
+      console.error(`[worktree] copy '${rel}' from ${projectDir} → ${worktreePath} failed:`, e);
+      skipped.push(rel);
+    }
+  }
+  return { copied, skipped };
+}
+
+/**
+ * Default gitignored-config file list per project name (last path
+ * segment of `projectDir`). Empty list = no files to copy. Extend as
+ * new projects surface the same papercut.
+ *
+ * The match is "endsWith /<key>" rather than equality so the same key
+ * applies to direct project roots AND to worktree-of-worktree paths.
+ */
+export const WORKTREE_CONFIG_DEFAULTS: Record<string, readonly string[]> = {
+  "fabrica-v3-api": ["config/age-keys.txt", "config/local.json"],
+};
+
+export function defaultWorktreeConfigFiles(projectDir: string): readonly string[] {
+  for (const [key, files] of Object.entries(WORKTREE_CONFIG_DEFAULTS)) {
+    if (projectDir.endsWith(`/${key}`) || projectDir.endsWith(`\\${key}`)) return files;
+  }
+  return [];
+}
