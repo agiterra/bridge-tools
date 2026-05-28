@@ -34,6 +34,7 @@ import type {
   BridgeHookContribution,
 } from "./types.js";
 import { ensureWorktree } from "./worktree.js";
+import { ensureWireInstalledForPath } from "./installed_plugins.js";
 
 import { Orchestrator } from "@agiterra/crew-tools";
 import {
@@ -202,6 +203,31 @@ export async function spawn(
     env.AGENT_BRANCH = opts.branch;
   } else if (opts.branch) {
     env.AGENT_BRANCH = opts.branch;
+  }
+
+  // 4c. Ensure the wire@agiterra plugin is installed for the resolved
+  //     project dir. Without this, Claude Code's --dangerously-load-
+  //     development-channels can't find wire by name (worktree subpaths
+  //     have no installed_plugins.json entry), so the MCP never starts,
+  //     no SSE stream opens, no agent_sessions row appears, and inbound
+  //     IPC is silently dropped — confirmed 2026-05-28 (financier-3210,
+  //     cruller-3066, stollen-3209, palmier-3113 absent from GET /agents
+  //     despite outbound wire-ipc working). The cc-launch.sh comment
+  //     spells out the constraint: wire MUST be loaded via
+  //     installed_plugins.json (not --plugin-dir) for channel routing.
+  //     Idempotent — no-op if an entry already exists for this path.
+  if (resolved_project_dir) {
+    try {
+      ensureWireInstalledForPath(resolved_project_dir);
+    } catch (e) {
+      // Don't fail spawn on this — surface the error and continue. The
+      // engineer will launch wire-blind, identical to the pre-fix
+      // behavior; this is strictly an additive improvement.
+      console.error(
+        `[bridge.spawn] ensureWireInstalledForPath failed for '${resolved_project_dir}':`,
+        e,
+      );
+    }
   }
 
   // 5. Crew launchAgent. All placement variants (including `near`) pre-create
