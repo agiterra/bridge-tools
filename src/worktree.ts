@@ -96,63 +96,128 @@ export async function ensureWorktree(projectDir: string, branch: string): Promis
 }
 
 /**
- * Copy a list of gitignored config files from the parent project's main
- * worktree into a freshly-created worktree. Git worktree-add never
- * copies gitignored files, but some projects (notably fabrica-v3-api)
- * have services that eager-decrypt sops config at module load — without
- * the keys/config present, any spec that imports such a service throws
- * at load time and the engineer can't run a single test until they
- * manually copy from the main checkout.
+ * A single source-side entry for the worktree-config helper. A bare
+ * string is the shorthand for `{ src, mode: "copy" }` with `dst === src`
+ * (i.e. copy `<projectDir>/<src>` → `<worktreePath>/<src>`).
  *
- * The list of files is provided by the caller (or via bridge spawn
- * defaults below). Each entry is a path relative to the project root.
- * Missing source files are skipped silently — only present files get
- * copied. Idempotent: overwrites the destination unconditionally so a
- * post-creation re-sync is always safe.
+ * Object form lets the caller:
+ *   - point at a sibling/parent path with `src: "../foo"` — useful for
+ *     scripts that live in the parent monorepo but are needed inside
+ *     submodule worktrees (fabrica-v3-api's `start-api*.sh` come from
+ *     the parent fabrica-v3 checkout).
+ *   - place the file at a different name with `dst`.
+ *   - choose `mode: "symlink"` so updates in the source location flow
+ *     into every worktree automatically — right for scripts and
+ *     auto-rotating configs; wrong for snapshot-style secrets.
  */
-export async function copyWorktreeConfig(
-  projectDir: string,
-  worktreePath: string,
-  files: readonly string[],
-): Promise<{ copied: string[]; skipped: string[] }> {
-  const { copyFileSync, mkdirSync, existsSync: exists } = await import("fs");
-  const { dirname } = await import("path");
-  const copied: string[] = [];
-  const skipped: string[] = [];
-  for (const rel of files) {
-    const src = join(projectDir, rel);
-    const dst = join(worktreePath, rel);
-    if (!exists(src)) {
-      skipped.push(rel);
-      continue;
-    }
-    const dstDir = dirname(dst);
-    if (!exists(dstDir)) mkdirSync(dstDir, { recursive: true });
-    try {
-      copyFileSync(src, dst);
-      copied.push(rel);
-    } catch (e) {
-      // Don't fail the whole spawn on one bad copy — surface and continue.
-      console.error(`[worktree] copy '${rel}' from ${projectDir} → ${worktreePath} failed:`, e);
-      skipped.push(rel);
-    }
-  }
-  return { copied, skipped };
+export type WorktreeConfigEntry =
+  | string
+  | {
+      /** Path relative to `projectDir`. Can include `../` to reach the parent monorepo. */
+      src: string;
+      /** Path relative to the new worktree. Defaults to `src`. */
+      dst?: string;
+      /** "copy" snapshots; "symlink" tracks the source. Default "copy". */
+      mode?: "copy" | "symlink";
+    };
+
+interface SeedResult {
+  copied: string[];
+  symlinked: string[];
+  skipped: string[];
 }
 
 /**
- * Default gitignored-config file list per project name (last path
- * segment of `projectDir`). Empty list = no files to copy. Extend as
- * new projects surface the same papercut.
+ * Seed a freshly-created worktree with files that `git worktree add`
+ * doesn't bring along — gitignored sops config, secrets, and start
+ * scripts that the engineer would otherwise have to hand-copy before
+ * running a single test.
  *
- * The match is "endsWith /<key>" rather than equality so the same key
- * applies to direct project roots AND to worktree-of-worktree paths.
+ * Renamed from `copyWorktreeConfig` (v0.9.0) to reflect that it now
+ * handles symlinks too. Bare-string entries still copy, so existing
+ * defaults remain backward-compatible.
+ *
+ * Missing source files skip silently. Per-entry errors are logged but
+ * don't abort the seeding — partial success is better than refusing to
+ * spawn over a single missing file. Existing destinations are
+ * overwritten, so this is safe to re-run.
  */
-export const WORKTREE_CONFIG_DEFAULTS: Record<string, readonly string[]> = {
-  "fabrica-v3-api": ["config/age-keys.txt", "config/local.json"],
+export async function seedWorktreeConfig(
+  projectDir: string,
+  worktreePath: string,
+  entries: readonly WorktreeConfigEntry[],
+): Promise<SeedResult> {
+  const { copyFileSync, mkdirSync, existsSync: exists, symlinkSync, unlinkSync, lstatSync } = await import("fs");
+  const { dirname, resolve } = await import("path");
+  const result: SeedResult = { copied: [], symlinked: [], skipped: [] };
+  for (const entry of entries) {
+    const norm =
+      typeof entry === "string"
+        ? { src: entry, dst: entry, mode: "copy" as const }
+        : { src: entry.src, dst: entry.dst ?? entry.src, mode: entry.mode ?? "copy" };
+    const srcAbs = resolve(projectDir, norm.src);
+    const dstAbs = resolve(worktreePath, norm.dst);
+    if (!exists(srcAbs)) {
+      result.skipped.push(norm.dst);
+      continue;
+    }
+    const dstDir = dirname(dstAbs);
+    if (!exists(dstDir)) mkdirSync(dstDir, { recursive: true });
+    try {
+      // Clear an existing dst (file or symlink) before writing the new one.
+      try {
+        const stat = lstatSync(dstAbs);
+        if (stat.isSymbolicLink() || stat.isFile()) unlinkSync(dstAbs);
+      } catch {
+        // dst doesn't exist; nothing to clear.
+      }
+      if (norm.mode === "symlink") {
+        symlinkSync(srcAbs, dstAbs);
+        result.symlinked.push(norm.dst);
+      } else {
+        copyFileSync(srcAbs, dstAbs);
+        result.copied.push(norm.dst);
+      }
+    } catch (e) {
+      console.error(`[worktree] seed '${norm.dst}' (mode=${norm.mode}) from ${srcAbs} failed:`, e);
+      result.skipped.push(norm.dst);
+    }
+  }
+  return result;
+}
+
+/**
+ * Backward-compatible alias for the v0.9.0 name. Same shape; entries
+ * coerce through the v0.10.0 seeding pipeline.
+ */
+export const copyWorktreeConfig = seedWorktreeConfig;
+
+/**
+ * Default seed list per project (last path segment of `projectDir`).
+ * Empty list = nothing to seed. Match is "endsWith /<key>" rather than
+ * equality so it applies to direct project roots AND nested submodule
+ * paths.
+ *
+ * fabrica-v3-api notes:
+ *   - `config/age-keys.txt` + `config/local.json` are snapshot-copied
+ *     (sops keys + per-machine config — engineer-local, no good reason
+ *     to track changes in the main checkout).
+ *   - `start-api*.sh` live in the parent fabrica-v3 monorepo, not in
+ *     the fabrica-v3-api submodule. Symlinked so any update in the main
+ *     checkout flows into every worktree on the next run.
+ */
+export const WORKTREE_CONFIG_DEFAULTS: Record<string, readonly WorktreeConfigEntry[]> = {
+  "fabrica-v3-api": [
+    "config/age-keys.txt",
+    "config/local.json",
+    { src: "../start-api.sh", mode: "symlink" },
+    { src: "../start-api-worker.sh", mode: "symlink" },
+    { src: "../start-api-agent.sh", mode: "symlink" },
+    { src: "../start-api-worker-agent.sh", mode: "symlink" },
+  ],
 };
 
-export function defaultWorktreeConfigFiles(projectDir: string): readonly string[] {
+export function defaultWorktreeConfigFiles(projectDir: string): readonly WorktreeConfigEntry[] {
   for (const [key, files] of Object.entries(WORKTREE_CONFIG_DEFAULTS)) {
     if (projectDir.endsWith(`/${key}`) || projectDir.endsWith(`\\${key}`)) return files;
   }
