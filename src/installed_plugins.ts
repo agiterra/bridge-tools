@@ -29,6 +29,22 @@ import { join } from "path";
 const PLUGIN_NAME = "wire@agiterra";
 const PLUGIN_CACHE_SUBDIR = "wire";
 
+// The full agiterra toolkit an engineer spawn needs loaded. In root-discovery
+// mode (cc-launch.sh with AGENT_PROJECT_ROOT) CC loads these from
+// installed_plugins.json instead of --plugin-dir, so the launch root must
+// carry an entry for each. Mirrors cc-launch.sh's legacy --plugin-dir loop
+// plus wire. { pluginName (installed_plugins.json key), cacheSubdir }.
+const TOOLKIT_PLUGINS: { pluginName: string; cacheSubdir: string }[] = [
+  { pluginName: "wire@agiterra", cacheSubdir: "wire" },
+  { pluginName: "wire-ipc@agiterra", cacheSubdir: "wire-ipc" },
+  { pluginName: "operator-relay@agiterra", cacheSubdir: "operator-relay" },
+  { pluginName: "knowledge@agiterra", cacheSubdir: "knowledge" },
+  { pluginName: "knowledge-indexer@agiterra", cacheSubdir: "knowledge-indexer" },
+  { pluginName: "github@agiterra", cacheSubdir: "github" },
+  { pluginName: "crew@agiterra", cacheSubdir: "crew" },
+  { pluginName: "crew-themes@agiterra", cacheSubdir: "crew-themes" },
+];
+
 interface InstalledPluginEntry {
   scope: "project" | "user";
   projectPath?: string;
@@ -140,4 +156,49 @@ export function ensureWireInstalledForPath(projectDir: string, homeDir?: string)
 
   writeFileSync(filePath, JSON.stringify(data, null, 4) + "\n", "utf-8");
   return latest.version;
+}
+
+/**
+ * Ensure the whole agiterra toolkit ({@link TOOLKIT_PLUGINS}) is present in
+ * `installed_plugins.json` for `projectDir` — used for the project ROOT an
+ * engineer spawn launches from in root-discovery mode, so CC can load every
+ * plugin (wire included, with channel routing) via discovery rather than
+ * `--plugin-dir`. Idempotent per plugin; only writes the file if something
+ * was added. Plugins with no cached version are skipped silently (the agent
+ * surfaces the missing-plugin error itself rather than failing the spawn).
+ *
+ * Returns the list of `name@version` entries added (empty if all present).
+ */
+export function ensureToolkitInstalledForPath(projectDir: string, homeDir?: string): string[] {
+  const home = homeDir ?? process.env.HOME;
+  if (!home) throw new Error("ensureToolkitInstalledForPath: HOME not set and no homeDir provided");
+
+  const filePath = join(home, ".claude", "plugins", "installed_plugins.json");
+  if (!existsSync(filePath)) return [];
+
+  const data = JSON.parse(readFileSync(filePath, "utf-8")) as InstalledPluginsFile;
+  const added: string[] = [];
+  const now = new Date().toISOString();
+
+  for (const { pluginName, cacheSubdir } of TOOLKIT_PLUGINS) {
+    const entries = data.plugins[pluginName] ?? [];
+    if (entries.some((e) => e.projectPath === projectDir)) continue; // idempotent
+    const latest = latestCachedVersionDir(home, cacheSubdir);
+    if (!latest) continue; // not cached — skip, don't fail the spawn
+    const newEntry: InstalledPluginEntry = {
+      scope: "project",
+      projectPath: projectDir,
+      installPath: latest.installPath,
+      version: latest.version,
+      installedAt: now,
+      lastUpdated: now,
+    };
+    data.plugins[pluginName] = [...entries, newEntry];
+    added.push(`${pluginName}@${latest.version}`);
+  }
+
+  if (added.length > 0) {
+    writeFileSync(filePath, JSON.stringify(data, null, 4) + "\n", "utf-8");
+  }
+  return added;
 }

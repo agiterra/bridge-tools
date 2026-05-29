@@ -34,7 +34,7 @@ import type {
   BridgeHookContribution,
 } from "./types.js";
 import { ensureWorktree, copyWorktreeConfig, defaultWorktreeConfigFiles } from "./worktree.js";
-import { ensureWireInstalledForPath } from "./installed_plugins.js";
+import { ensureToolkitInstalledForPath } from "./installed_plugins.js";
 
 import { Orchestrator } from "@agiterra/crew-tools";
 import {
@@ -231,28 +231,54 @@ export async function spawn(
     env.AGENT_BRANCH = opts.branch;
   }
 
-  // 4c. Ensure the wire@agiterra plugin is installed for the resolved
-  //     project dir. Without this, Claude Code's --dangerously-load-
-  //     development-channels can't find wire by name (worktree subpaths
-  //     have no installed_plugins.json entry), so the MCP never starts,
-  //     no SSE stream opens, no agent_sessions row appears, and inbound
-  //     IPC is silently dropped — confirmed 2026-05-28 (financier-3210,
-  //     cruller-3066, stollen-3209, palmier-3113 absent from GET /agents
-  //     despite outbound wire-ipc working). The cc-launch.sh comment
-  //     spells out the constraint: wire MUST be loaded via
-  //     installed_plugins.json (not --plugin-dir) for channel routing.
-  //     Idempotent — no-op if an entry already exists for this path.
-  if (resolved_project_dir) {
+  // 4c. Root-discovery plugin loading for Claude Code spawns (refined option
+  //     A, 2026-05-29). cc-launch.sh's prior approach loaded the toolkit via
+  //     --plugin-dir and left wire to --dangerously-load-development-channels;
+  //     but passing --plugin-dir makes CC skip installed_plugins.json
+  //     discovery entirely, so wire never loaded — the agent could send via
+  //     wire-ipc but had no wire channel, no dashboard presence, no inbound
+  //     IPC (Eclair, 2026-05-29; same signature as financier/cruller/stollen/
+  //     palmier 2026-05-28). The v0.8.0 ensureWireInstalledForPath fix was
+  //     necessary but insufficient — discovery is off whenever --plugin-dir
+  //     is present.
+  //
+  //     The fix: launch CC from the project ROOT (a real project dir we
+  //     populate with toolkit entries) with NO --plugin-dir, so CC loads the
+  //     whole toolkit — wire included, with channel routing — via discovery.
+  //     cc-launch.sh keys off AGENT_PROJECT_ROOT to enter this mode. The
+  //     engineer cd's into its pre-made worktree ($AGENT_WORKTREE) first;
+  //     plugins stay loaded across the cd. Codex spawns are unaffected (they
+  //     load via per-spawn config.toml, not installed_plugins.json).
+  const isClaudeCode = (opts.runtime ?? "claude-code") === "claude-code";
+  let launchProjectDir = resolved_project_dir;
+  let launchPrompt = opts.task;
+
+  if (isClaudeCode && opts.project_dir) {
     try {
-      ensureWireInstalledForPath(resolved_project_dir);
+      const added = ensureToolkitInstalledForPath(opts.project_dir);
+      if (added.length > 0) {
+        console.error(
+          `[bridge.spawn] toolkit entries added for root '${opts.project_dir}': ${added.join(", ")}`,
+        );
+      }
     } catch (e) {
-      // Don't fail spawn on this — surface the error and continue. The
-      // engineer will launch wire-blind, identical to the pre-fix
-      // behavior; this is strictly an additive improvement.
+      // Additive best-effort — never fail the spawn. Worst case the engineer
+      // launches with whatever the root already had.
       console.error(
-        `[bridge.spawn] ensureWireInstalledForPath failed for '${resolved_project_dir}':`,
+        `[bridge.spawn] ensureToolkitInstalledForPath failed for '${opts.project_dir}':`,
         e,
       );
+    }
+    env.AGENT_PROJECT_ROOT = opts.project_dir;
+    launchProjectDir = opts.project_dir; // launch from root for reliable discovery
+    if (resolved_project_dir && resolved_project_dir !== opts.project_dir) {
+      env.AGENT_WORKTREE = resolved_project_dir;
+      // Deterministic preamble: the engineer must work in its isolated
+      // worktree, but CC launched from the root for plugin discovery.
+      launchPrompt =
+        `Your isolated git worktree is at ${resolved_project_dir} (also in $AGENT_WORKTREE). ` +
+        `cd into it before doing any work — your plugins are already loaded and stay loaded across the cd.\n\n` +
+        opts.task;
     }
   }
 
@@ -261,8 +287,8 @@ export async function spawn(
   const launched = await deps.orchestrator.launchAgent({
     env,
     runtime: opts.runtime,
-    projectDir: resolved_project_dir,
-    prompt: opts.task,
+    projectDir: launchProjectDir,
+    prompt: launchPrompt,
     badge: opts.badge,
   });
 
