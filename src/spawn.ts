@@ -222,7 +222,17 @@ export async function spawn(
     const configFiles = defaultWorktreeConfigFiles(opts.project_dir);
     if (configFiles.length > 0) {
       try {
-        await copyWorktreeConfig(opts.project_dir, resolved_project_dir, configFiles);
+        const seeded = await copyWorktreeConfig(opts.project_dir, resolved_project_dir, configFiles);
+        // Surface real seed FAILURES (fs/permission errors) distinctly from
+        // legitimately-absent sources. A silent copy failure is what made the
+        // missing-secrets bug invisible (Brioche crop 2026-06-01) — log it loud
+        // so it lands in bridge's mcp-tee'd stderr for RCA.
+        if (seeded.failed.length > 0) {
+          console.error(
+            `[bridge.spawn] worktree seed FAILED for '${resolved_project_dir}': [${seeded.failed.join(", ")}] — engineer may hit missing secrets/config. ` +
+              `copied=[${seeded.copied.join(", ")}] symlinked=[${seeded.symlinked.join(", ")}] absent=[${seeded.skipped.join(", ")}]`,
+          );
+        }
       } catch (e) {
         console.error(`[bridge.spawn] copyWorktreeConfig failed for '${resolved_project_dir}':`, e);
       }

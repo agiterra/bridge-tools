@@ -124,7 +124,10 @@ export type WorktreeConfigEntry =
 interface SeedResult {
   copied: string[];
   symlinked: string[];
+  /** Source file legitimately absent — nothing to seed, expected. */
   skipped: string[];
+  /** Seed ERRORED (permission, fs, etc.) — a real problem the caller should surface. */
+  failed: string[];
 }
 
 /**
@@ -149,7 +152,7 @@ export async function seedWorktreeConfig(
 ): Promise<SeedResult> {
   const { copyFileSync, mkdirSync, existsSync: exists, symlinkSync, unlinkSync, lstatSync } = await import("fs");
   const { dirname, resolve } = await import("path");
-  const result: SeedResult = { copied: [], symlinked: [], skipped: [] };
+  const result: SeedResult = { copied: [], symlinked: [], skipped: [], failed: [] };
   for (const entry of entries) {
     const norm =
       typeof entry === "string"
@@ -180,7 +183,7 @@ export async function seedWorktreeConfig(
       }
     } catch (e) {
       console.error(`[worktree] seed '${norm.dst}' (mode=${norm.mode}) from ${srcAbs} failed:`, e);
-      result.skipped.push(norm.dst);
+      result.failed.push(norm.dst);
     }
   }
   return result;
@@ -199,21 +202,29 @@ export const copyWorktreeConfig = seedWorktreeConfig;
  * paths.
  *
  * fabrica-v3-api notes:
- *   - `config/age-keys.txt` + `config/local.json` are snapshot-copied
- *     (sops keys + per-machine config — engineer-local, no good reason
- *     to track changes in the main checkout).
+ *   - `config/age-keys.txt` + `config/local.json` + `.env` are snapshot-copied
+ *     (sops keys + per-machine config + secrets — engineer-local, gitignored,
+ *     no good reason to track changes in the main checkout). `.env` was the
+ *     gap that made every fresh engineer hand-copy it (Brioche crop 2026-06-01).
  *   - `start-api*.sh` live in the parent fabrica-v3 monorepo, not in
  *     the fabrica-v3-api submodule. Symlinked so any update in the main
  *     checkout flows into every worktree on the next run.
+ *
+ * fabrica-v3-contracts: gitignored `.env` (RPC/etcher keys) — previously no
+ * entry at all, so contracts worktrees got nothing seeded.
  */
 export const WORKTREE_CONFIG_DEFAULTS: Record<string, readonly WorktreeConfigEntry[]> = {
   "fabrica-v3-api": [
     "config/age-keys.txt",
     "config/local.json",
+    ".env",
     { src: "../start-api.sh", mode: "symlink" },
     { src: "../start-api-worker.sh", mode: "symlink" },
     { src: "../start-api-agent.sh", mode: "symlink" },
     { src: "../start-api-worker-agent.sh", mode: "symlink" },
+  ],
+  "fabrica-v3-contracts": [
+    ".env",
   ],
 };
 

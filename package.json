@@ -1,6 +1,6 @@
 {
   "name": "@agiterra/bridge-tools",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Runtime-agnostic composite functions for bridge — the orchestrator's plugin in the Agiterra Multi-Agent Toolkit. Collapses N-step orchestration dances (wire register → env-map assembly → crew launch → pane create → attach → IPC kickoff) into single function calls. Plus the BridgeHook contract that integration plugins (bridge-github, bridge-linear, etc.) implement.",
   "type": "module",
   "main": "./src/index.ts",
