@@ -33,8 +33,6 @@ import type {
   BridgeHook,
   BridgeHookContribution,
 } from "./types.js";
-import { ensureWorktree, copyWorktreeConfig, defaultWorktreeConfigFiles } from "./worktree.js";
-import { ensureToolkitInstalledForPath } from "./installed_plugins.js";
 
 import { Orchestrator } from "@agiterra/crew-tools";
 import {
@@ -205,100 +203,24 @@ export async function spawn(
     }
   }
 
-  // 4b. Worktree isolation. When `branch` is set and `worktree !== false`,
-  //     create `<project_dir>/worktrees/<branch>` so concurrent agents in
-  //     the same repo don't clobber each other's uncommitted work via git
-  //     checkout. Brioche's 2026-05-26 incident: Eclair (ENG-3180) and
-  //     Profiterole (ENG-3205) shared fabrica-v3-api project_dir; Profiterole's
-  //     checkout discarded ~600 lines of Eclair's uncommitted code.
-  let resolved_project_dir = opts.project_dir;
-  if (opts.branch && opts.worktree !== false && opts.project_dir) {
-    resolved_project_dir = await ensureWorktree(opts.project_dir, opts.branch);
-    env.AGENT_BRANCH = opts.branch;
-    // Copy known gitignored config (sops keys, local overrides) from the
-    // parent project into the new worktree. fabrica-v3-api spawns hit
-    // this 2026-05-28: services with module-load sops-decrypt threw on
-    // any spec import until the engineer manually copied the files.
-    const configFiles = defaultWorktreeConfigFiles(opts.project_dir);
-    if (configFiles.length > 0) {
-      try {
-        const seeded = await copyWorktreeConfig(opts.project_dir, resolved_project_dir, configFiles);
-        // Surface real seed FAILURES (fs/permission errors) distinctly from
-        // legitimately-absent sources. A silent copy failure is what made the
-        // missing-secrets bug invisible (Brioche crop 2026-06-01) — log it loud
-        // so it lands in bridge's mcp-tee'd stderr for RCA.
-        if (seeded.failed.length > 0) {
-          console.error(
-            `[bridge.spawn] worktree seed FAILED for '${resolved_project_dir}': [${seeded.failed.join(", ")}] — engineer may hit missing secrets/config. ` +
-              `copied=[${seeded.copied.join(", ")}] symlinked=[${seeded.symlinked.join(", ")}] absent=[${seeded.skipped.join(", ")}]`,
-          );
-        }
-      } catch (e) {
-        console.error(`[bridge.spawn] copyWorktreeConfig failed for '${resolved_project_dir}':`, e);
-      }
-    }
-  } else if (opts.branch) {
-    env.AGENT_BRANCH = opts.branch;
-  }
-
-  // 4c. Root-discovery plugin loading for Claude Code spawns (refined option
-  //     A, 2026-05-29). cc-launch.sh's prior approach loaded the toolkit via
-  //     --plugin-dir and left wire to --dangerously-load-development-channels;
-  //     but passing --plugin-dir makes CC skip installed_plugins.json
-  //     discovery entirely, so wire never loaded — the agent could send via
-  //     wire-ipc but had no wire channel, no dashboard presence, no inbound
-  //     IPC (Eclair, 2026-05-29; same signature as financier/cruller/stollen/
-  //     palmier 2026-05-28). The v0.8.0 ensureWireInstalledForPath fix was
-  //     necessary but insufficient — discovery is off whenever --plugin-dir
-  //     is present.
-  //
-  //     The fix: launch CC from the project ROOT (a real project dir we
-  //     populate with toolkit entries) with NO --plugin-dir, so CC loads the
-  //     whole toolkit — wire included, with channel routing — via discovery.
-  //     cc-launch.sh keys off AGENT_PROJECT_ROOT to enter this mode. The
-  //     engineer cd's into its pre-made worktree ($AGENT_WORKTREE) first;
-  //     plugins stay loaded across the cd. Codex spawns are unaffected (they
-  //     load via per-spawn config.toml, not installed_plugins.json).
-  const isClaudeCode = (opts.runtime ?? "claude-code") === "claude-code";
-  let launchProjectDir = resolved_project_dir;
-  let launchPrompt = opts.task;
-
-  if (isClaudeCode && opts.project_dir) {
-    try {
-      const added = ensureToolkitInstalledForPath(opts.project_dir);
-      if (added.length > 0) {
-        console.error(
-          `[bridge.spawn] toolkit entries added for root '${opts.project_dir}': ${added.join(", ")}`,
-        );
-      }
-    } catch (e) {
-      // Additive best-effort — never fail the spawn. Worst case the engineer
-      // launches with whatever the root already had.
-      console.error(
-        `[bridge.spawn] ensureToolkitInstalledForPath failed for '${opts.project_dir}':`,
-        e,
-      );
-    }
-    env.AGENT_PROJECT_ROOT = opts.project_dir;
-    launchProjectDir = opts.project_dir; // launch from root for reliable discovery
-    if (resolved_project_dir && resolved_project_dir !== opts.project_dir) {
-      env.AGENT_WORKTREE = resolved_project_dir;
-      // Deterministic preamble: the engineer must work in its isolated
-      // worktree, but CC launched from the root for plugin discovery.
-      launchPrompt =
-        `Your isolated git worktree is at ${resolved_project_dir} (also in $AGENT_WORKTREE). ` +
-        `cd into it before doing any work — your plugins are already loaded and stay loaded across the cd.\n\n` +
-        opts.task;
-    }
-  }
+  // 4b. Branch passthrough. If the caller names a branch, forward it as an
+  //     AGENT_BRANCH env hint — nothing more. Bridge does NOT create worktrees,
+  //     copy config, or run worktree-init: that's the agent's call (it has
+  //     agency), and submodules/worktrees are a consumer's layout concern, not
+  //     the generic stack's. The agent spawns in `opts.project_dir` as given
+  //     and loads its plugins from that dir's installed_plugins.json entries —
+  //     so the caller must spawn it in a dir that has them. (cc-launch.sh
+  //     passes NO --plugin-dir, which would otherwise disable discovery and
+  //     leave wire unloaded — the chronic wire-blind engineer bug.)
+  if (opts.branch) env.AGENT_BRANCH = opts.branch;
 
   // 5. Crew launchAgent. All placement variants (including `near`) pre-create
   //    the pane in step 4; we attach POST-launch below.
   const launched = await deps.orchestrator.launchAgent({
     env,
     runtime: opts.runtime,
-    projectDir: launchProjectDir,
-    prompt: launchPrompt,
+    projectDir: opts.project_dir,
+    prompt: opts.task,
     badge: opts.badge,
   });
 
