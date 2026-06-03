@@ -68,12 +68,10 @@ export interface SpawnOptions {
   env?: Record<string, string>;
   /** Runtime to launch (e.g., "claude", "codex"). Forwarded to crew.launchAgent. */
   runtime?: string;
-  /** Working directory for the spawned process. Forwarded to crew.launchAgent. When `branch` is set + `worktree !== false` and project_dir is a git repo, bridge creates an isolated worktree under `<project_dir>/worktrees/<branch>` and the spawned agent's project_dir is set to the worktree path. */
+  /** Working directory for the spawned process — forwarded to crew.launchAgent as the spawn cwd. The agent loads its plugins from this dir's installed_plugins.json entries, so the caller must spawn it in a dir that has them (NOT a worktree subpath that doesn't). Bridge does not interpret or rewrite this path. */
   project_dir?: string;
-  /** Git branch the agent works on. When set, bridge creates an isolated worktree (unless `worktree: false`) so concurrent agents don't clobber each other's uncommitted changes. The branch is created with `-b` if it doesn't exist locally. */
+  /** Git branch the agent works on. Forwarded as the `AGENT_BRANCH` env hint only — bridge does NOT create a worktree. Agents manage their own worktrees (a consumer/agent concern, not the generic stack's). */
   branch?: string;
-  /** Set to `false` to share `project_dir` between concurrent agents instead of creating an isolated worktree. Default `true` when `branch` is set. */
-  worktree?: boolean;
   /** Optional badge text displayed in the pane's top-right when attached. Forwarded to crew.launchAgent. */
   badge?: string;
 }
