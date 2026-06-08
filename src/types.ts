@@ -74,6 +74,8 @@ export interface SpawnOptions {
   branch?: string;
   /** Optional badge text displayed in the pane's top-right when attached. Forwarded to crew.launchAgent. */
   badge?: string;
+  /** Force-rotate the new agent's Wire identity at registration. A reaped agent_id keeps its old pubkey on file, so registering a fresh keypair under that id fails with HTTP 409 `agent_exists_pubkey_mismatch`. `force_rotate` skips the existing-row check and mints a fresh keypair — permanently locking out any process still holding the previous key. Use only when re-spawning a reaped id with no live process on the old key. */
+  force_rotate?: boolean;
 }
 
 /** Result of a successful spawn. */

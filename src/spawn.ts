@@ -79,6 +79,23 @@ export async function spawn(
   const new_agent_id = opts.agent_id;
   const display_name = opts.display_name ?? new_agent_id;
 
+  // 0. Guard: refuse a git-worktree subpath as project_dir. The agent loads its
+  //    plugins from project_dir's installed_plugins.json; a worktree subpath
+  //    (`.../worktrees/<branch>`) usually lacks the wire/wire-ipc entries, so the
+  //    agent launches IPC-blind (in + out dead) with NO error — the silent
+  //    failure Brioche hit spawning into fabrica-v3/worktrees/<branch>. Bridge
+  //    stays worktree-agnostic (it does not rewrite paths or seed config — a
+  //    consumer-layout concern), so the fix is to fail LOUD: spawn at the repo
+  //    ROOT and pass `branch`; the agent self-creates its worktree.
+  if (opts.project_dir && /(^|\/)worktrees\//.test(opts.project_dir)) {
+    throw new Error(
+      `spawn: project_dir '${opts.project_dir}' looks like a git-worktree subpath (contains '/worktrees/'). ` +
+      `The agent loads plugins from this dir's installed_plugins.json, and worktree subpaths usually lack the ` +
+      `wire/wire-ipc entries — so it would launch IPC-blind with no error. Spawn at the repo ROOT and pass ` +
+      `branch='<branch>'; the agent self-creates its worktree (the documented pattern).`,
+    );
+  }
+
   // 1. Run pre_spawn hooks for declared capabilities.
   const applied_capabilities: string[] = [];
   const hook_env: Record<string, string> = {};
@@ -104,7 +121,11 @@ export async function spawn(
     deps.parent_signing_key,
     new_agent_id,
     display_name,
-    { pubkey: new_keypair.publicKey },
+    // force_rotate lets the composite re-spawn a reaped agent_id in one call —
+    // without it, a fresh keypair under an id whose old pubkey is still on file
+    // 409s (agent_exists_pubkey_mismatch), forcing a register_agent({force_rotate})
+    // dance first. Off by default (only mint-over an existing identity on request).
+    { pubkey: new_keypair.publicKey, force_rotate: opts.force_rotate },
   );
 
   // 3. Assemble env. Precedence (lowest → highest): hook contributions,
