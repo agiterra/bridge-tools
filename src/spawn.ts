@@ -113,20 +113,34 @@ export async function spawn(
   }
 
   // 2. Wire identity: sponsor a new keypair for the ephemeral.
-  const new_keypair: KeyPair = await generateKeyPair();
-  const new_privkey_b64 = await exportPrivateKey(new_keypair.privateKey);
-  await registerOrRefresh(
-    deps.wire_url,
-    deps.parent_agent_id,
-    deps.parent_signing_key,
-    new_agent_id,
-    display_name,
-    // force_rotate lets the composite re-spawn a reaped agent_id in one call —
-    // without it, a fresh keypair under an id whose old pubkey is still on file
-    // 409s (agent_exists_pubkey_mismatch), forcing a register_agent({force_rotate})
-    // dance first. Off by default (only mint-over an existing identity on request).
-    { pubkey: new_keypair.publicKey, force_rotate: opts.force_rotate },
-  );
+  // Wrapped so a bare native throw here (e.g. crypto.subtle.sign on a bad
+  // sponsor key, which surfaces as an empty-message "Error") names THIS step
+  // instead of a useless `#run native:NN`. Carries the original via `cause`.
+  let new_keypair: KeyPair;
+  let new_privkey_b64: string;
+  try {
+    new_keypair = await generateKeyPair();
+    new_privkey_b64 = await exportPrivateKey(new_keypair.privateKey);
+    await registerOrRefresh(
+      deps.wire_url,
+      deps.parent_agent_id,
+      deps.parent_signing_key,
+      new_agent_id,
+      display_name,
+      // force_rotate lets the composite re-spawn a reaped agent_id in one call —
+      // without it, a fresh keypair under an id whose old pubkey is still on file
+      // 409s (agent_exists_pubkey_mismatch), forcing a register_agent({force_rotate})
+      // dance first. Off by default (only mint-over an existing identity on request).
+      { pubkey: new_keypair.publicKey, force_rotate: opts.force_rotate },
+    );
+  } catch (e) {
+    const m = (e as Error)?.message || String(e);
+    throw new Error(
+      `spawn[${new_agent_id}]: WIRE-IDENTITY step failed (sponsor=${deps.parent_agent_id}, force_rotate=${opts.force_rotate}): ` +
+      (m && m !== "Error" ? m : "(empty native error — likely crypto.subtle.sign on the sponsor's signing key; verify the sponsor's AGENT_PRIVATE_KEY is a valid sign-capable Ed25519 key)"),
+      { cause: e },
+    );
+  }
 
   // 3. Assemble env. Precedence (lowest → highest): hook contributions,
   //    bridge-required identity vars, per-spawn env overrides.
@@ -237,13 +251,23 @@ export async function spawn(
 
   // 5. Crew launchAgent. All placement variants (including `near`) pre-create
   //    the pane in step 4; we attach POST-launch below.
-  const launched = await deps.orchestrator.launchAgent({
-    env,
-    runtime: opts.runtime,
-    projectDir: opts.project_dir,
-    prompt: opts.task,
-    badge: opts.badge,
-  });
+  let launched;
+  try {
+    launched = await deps.orchestrator.launchAgent({
+      env,
+      runtime: opts.runtime,
+      projectDir: opts.project_dir,
+      prompt: opts.task,
+      badge: opts.badge,
+    });
+  } catch (e) {
+    const m = (e as Error)?.message || String(e);
+    throw new Error(
+      `spawn[${new_agent_id}]: crew LAUNCH-AGENT step failed (project_dir=${opts.project_dir}, runtime=${opts.runtime}): ` +
+      (m && m !== "Error" ? m : "(empty native error from crew launchAgent — likely the terminal backend / screen creation)"),
+      { cause: e },
+    );
+  }
 
   if (post_launch_attach?.pane) {
     try {
