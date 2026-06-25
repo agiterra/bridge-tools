@@ -12,6 +12,7 @@
 
 import type { SpawnOptions, BridgeHook } from "./types.js";
 import { paneNear, type PaneNearResult } from "./pane-near.js";
+import { REMOTE_LOCAL_BROKER_URL } from "./spawn.js";
 import type { Orchestrator } from "@agiterra/crew-tools";
 
 export interface ComposeBriefResult {
@@ -58,6 +59,22 @@ export function composeBrief(
     );
   }
 
+  // Mirror spawn's cross-machine resolution so the dry-run reflects a REMOTE
+  // spawn accurately (registration target, env overrides, forced-headless).
+  const machineRow = opts.machine
+    ? deps.orchestrator.store.getMachine(opts.machine)
+    : undefined;
+  if (opts.machine && !machineRow) {
+    notes.push(`machine '${opts.machine}' is NOT registered — spawn would throw. Register it first with machine_register({ name, ssh_host, broker_url }).`);
+  }
+  const isRemote = !!machineRow && machineRow.ssh_host !== "localhost";
+  if (isRemote && !opts.run_as_uid) {
+    notes.push(`machine='${opts.machine}' is remote but run_as_uid is missing — spawn would throw (required: the per-UID account, e.g. _ephemeral).`);
+  }
+  if (isRemote && !machineRow!.broker_url) {
+    notes.push(`machine='${opts.machine}' has no broker_url — spawn would throw (approach A registers the ephemeral against the remote's broker). Re-register with broker_url set.`);
+  }
+
   const env_preview: Record<string, string> = {
     AGENT_ID: opts.agent_id,
     AGENT_NAME: display_name,
@@ -65,13 +82,31 @@ export function composeBrief(
     AGENT_PRIVATE_KEY: "<minted at spawn>",
     AGENT_PARENT: opts.sponsor?.parent_identity ?? deps.parent_agent_id,
     AGENT_ROLES: opts.roles.join(","),
-    WIRE_URL: deps.wire_url,
+    // REMOTE: the agent dials its host's local broker; its public URL is the
+    // machine's broker_url (where its key is registered, approach A).
+    WIRE_URL: isRemote ? REMOTE_LOCAL_BROKER_URL : deps.wire_url,
+    ...(isRemote
+      ? {
+          WIRE_EXTERNAL_URL: machineRow!.broker_url ?? "<machine has no broker_url>",
+          KNOWLEDGE_VAULT: `/Users/${opts.run_as_uid ?? "<run_as_uid>"}/.knowledge-vaults/${opts.agent_id}`,
+        }
+      : {}),
     ...(opts.env ?? {}),
   };
 
+  if (isRemote) {
+    notes.push(
+      `REMOTE spawn on machine='${opts.machine}' (ssh_host=${machineRow!.ssh_host}, run_as_uid=${opts.run_as_uid}): ` +
+      `headless (any placement ignored), key registered against broker_url=${machineRow!.broker_url ?? "<unset>"} (approach A — verified live by the integration gate).`,
+    );
+  }
+
   let placement: PaneNearResult | undefined;
   const p = opts.placement;
-  if (p && "detached" in p && p.detached) {
+  if (isRemote) {
+    // Remote → forced headless; skip local placement preview entirely.
+    placement = undefined;
+  } else if (p && "detached" in p && p.detached) {
     notes.push("Placement is detached — no pane will be created.");
   } else if (p && "near" in p) {
     try {

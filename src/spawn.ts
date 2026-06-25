@@ -43,6 +43,14 @@ import {
   type KeyPair,
 } from "@agiterra/wire-tools";
 
+/**
+ * The Wire broker URL a REMOTE ephemeral dials from its own machine. Cross-
+ * machine agents talk to their host's LOCAL broker (e.g. patisserie on the Mini
+ * listening on :9800) for low-latency outbound, NOT back to the parent's broker.
+ * Override per-spawn via env.WIRE_URL if a host's local broker differs.
+ */
+export const REMOTE_LOCAL_BROKER_URL = "http://localhost:9800";
+
 /** Runtime dependencies spawn needs but doesn't own. The MCP adapter constructs these once at boot and passes them in. */
 export interface SpawnDeps {
   /** Crew orchestrator instance. Holds the terminal backend + state DB. */
@@ -96,6 +104,35 @@ export async function spawn(
     );
   }
 
+  // 0b. Cross-machine resolution. When opts.machine names a registered NON-LOCAL
+  //     machine, this spawn goes REMOTE: crew creates the screen on that host
+  //     (ssh + sudo -u run_as_uid, wired in launchAgent), the agent dials its
+  //     host's local broker, and — approach A — we register its key against the
+  //     remote's PUBLIC broker_url. Federation relays MESSAGES but NOT
+  //     REGISTRATIONS, so the key must live on the broker the agent actually
+  //     dials (the C proof-spawn's 401 was exactly this gap). Local machines
+  //     (ssh_host=localhost) and no machine → unchanged local path.
+  const machineRow = opts.machine
+    ? deps.orchestrator.store.getMachine(opts.machine)
+    : undefined;
+  if (opts.machine && !machineRow) {
+    throw new Error(
+      `spawn[${new_agent_id}]: unknown machine '${opts.machine}' — register it first with machine_register({ name, ssh_host, broker_url }).`,
+    );
+  }
+  const isRemote = !!machineRow && machineRow.ssh_host !== "localhost";
+  if (isRemote && !opts.run_as_uid) {
+    throw new Error(
+      `spawn[${new_agent_id}]: machine='${opts.machine}' is remote — run_as_uid is required (the per-UID account to spawn under, e.g. _ephemeral).`,
+    );
+  }
+  if (isRemote && !machineRow!.broker_url) {
+    throw new Error(
+      `spawn[${new_agent_id}]: machine='${opts.machine}' has no broker_url — a cross-machine spawn registers the ephemeral against the remote's broker (approach A). ` +
+      `Re-register it: machine_register({ name:'${opts.machine}', ssh_host:'...', broker_url:'https://<remote-public-broker>' }).`,
+    );
+  }
+
   // 1. Run pre_spawn hooks for declared capabilities.
   const applied_capabilities: string[] = [];
   const hook_env: Record<string, string> = {};
@@ -116,13 +153,21 @@ export async function spawn(
   // Wrapped so a bare native throw here (e.g. crypto.subtle.sign on a bad
   // sponsor key, which surfaces as an empty-message "Error") names THIS step
   // instead of a useless `#run native:NN`. Carries the original via `cause`.
+  //
+  //    REMOTE (approach A): register against the remote machine's PUBLIC
+  //    broker_url, not the parent's broker. The agent dials its host's local
+  //    broker, whose key store federation does NOT populate from the parent —
+  //    so the sponsoring parent registers the key THERE (parent-signed; the
+  //    remote broker trusting the parent's sponsor identity over federation is
+  //    exactly what the live gate proves).
+  const registration_url = isRemote ? machineRow!.broker_url! : deps.wire_url;
   let new_keypair: KeyPair;
   let new_privkey_b64: string;
   try {
     new_keypair = await generateKeyPair();
     new_privkey_b64 = await exportPrivateKey(new_keypair.privateKey);
     await registerOrRefresh(
-      deps.wire_url,
+      registration_url,
       deps.parent_agent_id,
       deps.parent_signing_key,
       new_agent_id,
@@ -136,7 +181,7 @@ export async function spawn(
   } catch (e) {
     const m = (e as Error)?.message || String(e);
     throw new Error(
-      `spawn[${new_agent_id}]: WIRE-IDENTITY step failed (sponsor=${deps.parent_agent_id}, force_rotate=${opts.force_rotate}): ` +
+      `spawn[${new_agent_id}]: WIRE-IDENTITY step failed (sponsor=${deps.parent_agent_id}, registration_url=${registration_url}${isRemote ? ` [remote machine '${opts.machine}']` : ""}, force_rotate=${opts.force_rotate}): ` +
       (m && m !== "Error" ? m : "(empty native error — likely crypto.subtle.sign on the sponsor's signing key; verify the sponsor's AGENT_PRIVATE_KEY is a valid sign-capable Ed25519 key)"),
       { cause: e },
     );
@@ -161,14 +206,27 @@ export async function spawn(
     AGENT_PRIVATE_KEY: new_privkey_b64,
     AGENT_PARENT: parent_id,
     AGENT_ROLES: opts.roles.join(","),
-    WIRE_URL: deps.wire_url,
+    // REMOTE: dial the host's LOCAL broker (low-latency outbound); the parent's
+    // broker is reachable from there only via federation. LOCAL: the parent's
+    // broker as before.
+    WIRE_URL: isRemote ? REMOTE_LOCAL_BROKER_URL : deps.wire_url,
     // Plugins that advertise webhook URLs to external services need the
     // public Wire URL — register_pr_webhook returned a localhost callback
     // before this propagation and GitHub rejected with 422 (Brioche 2026-
-    // 05-28 papercut #1). Default to WIRE_URL if no external URL is set,
-    // which is correct for setups without an ngrok tunnel.
-    WIRE_EXTERNAL_URL: deps.wire_external_url ?? deps.wire_url,
+    // 05-28 papercut #1). For a remote agent the public URL is its host's
+    // broker_url (where its key is registered). Else default to WIRE_URL if no
+    // external URL is set, which is correct for setups without an ngrok tunnel.
+    WIRE_EXTERNAL_URL: isRemote ? machineRow!.broker_url! : (deps.wire_external_url ?? deps.wire_url),
     KNOWLEDGE_ENRICH_RULES: JSON.stringify({ ipc: { from: [parent_id] } }),
+    // Per-ephemeral vault isolation for remote ephemerals ([[plan-recycle-
+    // trigger]]): each gets its OWN KNOWLEDGE vault keyed by agent_id so a
+    // future recycle's save->clear->boot touches only its own session-state
+    // (the fleet shares one vault today → every recycle would clobber the
+    // others'). The D-side hook is just this env var; the knowledge plugin
+    // honors absolute KNOWLEDGE_VAULT over its $CWD/.knowledge default. Full
+    // reap-cleanup + worktree-coupling land with the recycle feature.
+    // Overridable: opts.env (spread below) wins.
+    ...(isRemote ? { KNOWLEDGE_VAULT: `/Users/${opts.run_as_uid}/.knowledge-vaults/${new_agent_id}` } : {}),
     ...(opts.env ?? {}),
   };
 
@@ -188,7 +246,11 @@ export async function spawn(
   // Post-launch placement: { tab name to attach to, optional pane name to attach to }
   let post_launch_attach: { tab: string; pane?: string } | undefined;
 
-  if (placement && !detached) {
+  // Remote spawns are ALWAYS headless from this orchestrator's POV — the agent's
+  // screen lives on another host, so there is no local pane to attach. Any
+  // placement passed for a remote spawn is ignored (force headless). Operator
+  // visibility on the remote is via ssh + screen -x / crew remote attach.
+  if (placement && !detached && !isRemote) {
     if ("near" in placement) {
       // Resolve `near` to an anchor pane (pane name OR agent name → agent's
       // attached pane). Then use the same createPane + attachAgent path as
@@ -259,12 +321,18 @@ export async function spawn(
       projectDir: opts.project_dir,
       prompt: opts.task,
       badge: opts.badge,
+      // Cross-machine routing: when machine is non-local, launchAgent creates
+      // the screen on that host via ssh + sudo -u runAsUid and stamps
+      // machine_name (so the reconciler won't false-reap it). Resolved/validated
+      // above; launchAgent treats a localhost machine as a normal local spawn.
+      machine: opts.machine,
+      runAsUid: opts.run_as_uid,
     });
   } catch (e) {
     const m = (e as Error)?.message || String(e);
     throw new Error(
-      `spawn[${new_agent_id}]: crew LAUNCH-AGENT step failed (project_dir=${opts.project_dir}, runtime=${opts.runtime}): ` +
-      (m && m !== "Error" ? m : "(empty native error from crew launchAgent — likely the terminal backend / screen creation)"),
+      `spawn[${new_agent_id}]: crew LAUNCH-AGENT step failed (project_dir=${opts.project_dir}, runtime=${opts.runtime}${isRemote ? `, machine='${opts.machine}' run_as_uid='${opts.run_as_uid}' [remote]` : ""}): ` +
+      (m && m !== "Error" ? m : "(empty native error from crew launchAgent — likely the terminal backend / screen creation; for remote spawns also check ssh reachability + sudo -u perms)"),
       { cause: e },
     );
   }
