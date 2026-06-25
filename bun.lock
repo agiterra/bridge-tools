@@ -5,7 +5,7 @@
     "": {
       "name": "@agiterra/bridge-tools",
       "dependencies": {
-        "@agiterra/crew-tools": "agiterra/crew-tools#v2.16.0",
+        "@agiterra/crew-tools": "agiterra/crew-tools#v2.17.0",
         "@agiterra/knowledge-indexer-tools": "agiterra/knowledge-indexer-tools#v1.2.0",
         "@agiterra/knowledge-tools": "agiterra/knowledge-tools#v0.2.3",
         "@agiterra/wire-tools": "agiterra/wire-tools#v2.8.0",
@@ -19,7 +19,7 @@
     },
   },
   "packages": {
-    "@agiterra/crew-tools": ["@agiterra/crew-tools@github:agiterra/crew-tools#665213f", { "dependencies": { "@modelcontextprotocol/sdk": "^1.29.0" }, "bin": { "crew": "./src/cli.ts" } }, "agiterra-crew-tools-665213f", "sha512-gx0wnEdm+6wErziJPdzSrz1cM/TiHC/IXWwXVPXLG13I8pcNe8ffIW32mHnoJW/DkZ5HOPhaQ7Kb6BxsDUwdog=="],
+    "@agiterra/crew-tools": ["@agiterra/crew-tools@github:agiterra/crew-tools#cf83ba1", { "dependencies": { "@modelcontextprotocol/sdk": "^1.29.0" }, "bin": { "crew": "./src/cli.ts" } }, "agiterra-crew-tools-cf83ba1", "sha512-irYqcWxAgjQIFGcUotcfTXea0VeK9pPgQUvTUGrq9BtYh4kuXU+m8fv4FzQlMFbMevcy8EjMDEHvOinfrCbF9g=="],
 
     "@agiterra/knowledge-indexer-tools": ["@agiterra/knowledge-indexer-tools@github:agiterra/knowledge-indexer-tools#9919462", { "dependencies": { "@agiterra/crew-tools": "agiterra/crew-tools#v2.5.1", "@agiterra/knowledge-tools": "agiterra/knowledge-tools#v0.2.3" } }, "agiterra-knowledge-indexer-tools-9919462", "sha512-PNXjdF8+xCKcL2EVgaPmvNCfHV8RRIZQjQ8wbiMTi1ok292gHleOtB3MIzIEPTGvDgUY7zHXHp9oRPGRn4ytpA=="],
 
