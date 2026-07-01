@@ -51,6 +51,19 @@ import {
  */
 export const REMOTE_LOCAL_BROKER_URL = "http://localhost:9800";
 
+/**
+ * Strip a leading `user@` from an ssh host, yielding a BARE host. Crew's
+ * machine-table `ssh_host` carries the ssh user (e.g.
+ * `tim@patisserie.tail3ef8a5.ts.net`) because crew runs `ssh <ssh_host>`
+ * directly — but the dashboard attach button's WIRE_SSH_HOST convention is a
+ * bare host: WireAttach.app prepends `tim@` itself, so a raw value would build
+ * `ssh tim@tim@…`. Idempotent on already-bare hosts.
+ * See [[reference-wireattach-clicktoattach]].
+ */
+export function bareSshHost(sshHost: string): string {
+  return sshHost.replace(/^[^@]+@/, "");
+}
+
 /** Runtime dependencies spawn needs but doesn't own. The MCP adapter constructs these once at boot and passes them in. */
 export interface SpawnDeps {
   /** Crew orchestrator instance. Holds the terminal backend + state DB. */
@@ -65,6 +78,15 @@ export interface SpawnDeps {
    * which is the right behavior on machines without an ngrok tunnel.
    */
   wire_external_url?: string;
+  /**
+   * BARE host (no `user@`) this orchestrator runs on, ssh-reachable as
+   * `tim@<host>`. Forwarded into a LOCAL spawn's WIRE_SSH_HOST so its dashboard
+   * attach button can reconstruct `ssh tim@<host>` from another cockpit. Unset →
+   * WIRE_SSH_HOST is empty and the button falls back to a same-machine
+   * `screen -r`. REMOTE spawns derive the host from the target machine row
+   * instead. See [[reference-wireattach-clicktoattach]].
+   */
+  wire_ssh_host?: string;
   /** Orchestrator's agent ID — used as the sponsoring identity for the new ephemeral. */
   parent_agent_id: string;
   /** Orchestrator's signing key — signs the registration request. */
@@ -217,6 +239,18 @@ export async function spawn(
     // broker_url (where its key is registered). Else default to WIRE_URL if no
     // external URL is set, which is correct for setups without an ngrok tunnel.
     WIRE_EXTERNAL_URL: isRemote ? machineRow!.broker_url! : (deps.wire_external_url ?? deps.wire_url),
+    // Placement self-report for the dashboard attach button
+    // ([[reference-wireattach-clicktoattach]]): wire-tools selfReportFields()
+    // forwards these into POST /agents/register, and WireAttach.app rebuilds
+    // `ssh -t tim@<WIRE_SSH_HOST> "sudo -u <WIRE_RUN_AS_UID> screen -DR <screen>"`.
+    // REMOTE: the target machine's BARE host (bareSshHost strips the `user@` crew's
+    // ssh_host carries, else the button builds `ssh tim@tim@…`) + the per-UID
+    // account we sudo into (run_as_uid, guaranteed non-empty above for remote).
+    // LOCAL: the screen runs under the SPAWNER's uid (no sudo), so run_as_uid is
+    // empty — reporting _ephemeral would make the attach's `sudo -u _ephemeral`
+    // fail; host comes from the spawner's own env (deps.wire_ssh_host).
+    WIRE_SSH_HOST: isRemote ? bareSshHost(machineRow!.ssh_host) : (deps.wire_ssh_host ?? ""),
+    WIRE_RUN_AS_UID: isRemote ? opts.run_as_uid! : "",
     KNOWLEDGE_ENRICH_RULES: JSON.stringify({ ipc: { from: [parent_id] } }),
     // Per-ephemeral vault isolation for remote ephemerals ([[plan-recycle-
     // trigger]]): each gets its OWN KNOWLEDGE vault keyed by agent_id so a

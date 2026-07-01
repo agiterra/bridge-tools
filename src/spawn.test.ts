@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { spawn } from "./spawn";
+import { spawn, bareSshHost } from "./spawn";
 import type { SpawnDeps } from "./spawn";
 import type { SpawnOptions } from "./types";
 
@@ -43,5 +43,20 @@ describe("spawn — git-worktree subpath guard", () => {
   test("no project_dir → guard is a no-op", async () => {
     const msg = await messageOf({ ...base });
     expect(msg).not.toContain("worktrees");
+  });
+});
+
+describe("bareSshHost — bare host for the WIRE_SSH_HOST attach convention", () => {
+  // crew's machine-table ssh_host carries the ssh user (`tim@host`) because crew
+  // runs `ssh <ssh_host>` directly, but WireAttach.app prepends `tim@` itself — so
+  // the attach button needs a BARE host or it builds `ssh tim@tim@…`.
+  test("strips a leading user@", () => {
+    expect(bareSshHost("tim@patisserie.tail3ef8a5.ts.net")).toBe("patisserie.tail3ef8a5.ts.net");
+  });
+  test("is idempotent on an already-bare host", () => {
+    expect(bareSshHost("tims-mac-mini.local")).toBe("tims-mac-mini.local");
+  });
+  test("strips only the leading user@ (rest of the host preserved verbatim)", () => {
+    expect(bareSshHost("root@host@weird")).toBe("host@weird");
   });
 });

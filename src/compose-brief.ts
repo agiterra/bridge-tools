@@ -12,7 +12,7 @@
 
 import type { SpawnOptions, BridgeHook } from "./types.js";
 import { paneNear, type PaneNearResult } from "./pane-near.js";
-import { REMOTE_LOCAL_BROKER_URL } from "./spawn.js";
+import { REMOTE_LOCAL_BROKER_URL, bareSshHost } from "./spawn.js";
 import type { Orchestrator } from "@agiterra/crew-tools";
 
 export interface ComposeBriefResult {
@@ -85,6 +85,12 @@ export function composeBrief(
     // REMOTE: the agent dials its host's local broker; its public URL is the
     // machine's broker_url (where its key is registered, approach A).
     WIRE_URL: isRemote ? REMOTE_LOCAL_BROKER_URL : deps.wire_url,
+    // Placement self-report ([[reference-wireattach-clicktoattach]]) — mirrors
+    // spawn(). REMOTE: target machine's BARE host + the per-UID account. LOCAL:
+    // run_as_uid empty (spawn runs under the spawner's uid); host is the spawner's
+    // own env at real spawn time, not resolvable in this dry-run preview.
+    WIRE_SSH_HOST: isRemote ? bareSshHost(machineRow!.ssh_host) : "<spawner WIRE_SSH_HOST>",
+    WIRE_RUN_AS_UID: isRemote ? (opts.run_as_uid ?? "<run_as_uid>") : "",
     ...(isRemote
       ? {
           WIRE_EXTERNAL_URL: machineRow!.broker_url ?? "<machine has no broker_url>",
