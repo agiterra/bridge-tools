@@ -12,7 +12,7 @@
 
 import type { SpawnOptions, BridgeHook } from "./types.js";
 import { paneNear, type PaneNearResult } from "./pane-near.js";
-import { REMOTE_LOCAL_BROKER_URL, bareSshHost } from "./spawn.js";
+import { REMOTE_LOCAL_BROKER_URL, bareSshHost, EPHEMERAL_UID } from "./spawn.js";
 import type { Orchestrator } from "@agiterra/crew-tools";
 
 export interface ComposeBriefResult {
@@ -68,9 +68,6 @@ export function composeBrief(
     notes.push(`machine '${opts.machine}' is NOT registered — spawn would throw. Register it first with machine_register({ name, ssh_host, broker_url }).`);
   }
   const isRemote = !!machineRow && machineRow.ssh_host !== "localhost";
-  if (isRemote && !opts.run_as_uid) {
-    notes.push(`machine='${opts.machine}' is remote but run_as_uid is missing — spawn would throw (required: the per-UID account, e.g. _ephemeral).`);
-  }
   if (isRemote && !machineRow!.broker_url) {
     notes.push(`machine='${opts.machine}' has no broker_url — spawn would throw (approach A registers the ephemeral against the remote's broker). Re-register with broker_url set.`);
   }
@@ -86,15 +83,16 @@ export function composeBrief(
     // machine's broker_url (where its key is registered, approach A).
     WIRE_URL: isRemote ? REMOTE_LOCAL_BROKER_URL : deps.wire_url,
     // Placement self-report ([[reference-wireattach-clicktoattach]]) — mirrors
-    // spawn(). REMOTE: target machine's BARE host + the per-UID account. LOCAL:
-    // run_as_uid empty (spawn runs under the spawner's uid); host is the spawner's
-    // own env at real spawn time, not resolvable in this dry-run preview.
+    // spawn(). REMOTE: target machine's BARE host + the sanctioned isolated account
+    // (EPHEMERAL_UID, inferred — not a param). LOCAL: run_as_uid empty (spawn runs
+    // under the spawner's uid); host is the spawner's own env at real spawn time,
+    // not resolvable in this dry-run preview.
     WIRE_SSH_HOST: isRemote ? bareSshHost(machineRow!.ssh_host) : "<spawner WIRE_SSH_HOST>",
-    WIRE_RUN_AS_UID: isRemote ? (opts.run_as_uid ?? "<run_as_uid>") : "",
+    WIRE_RUN_AS_UID: isRemote ? EPHEMERAL_UID : "",
     ...(isRemote
       ? {
           WIRE_EXTERNAL_URL: machineRow!.broker_url ?? "<machine has no broker_url>",
-          KNOWLEDGE_VAULT: `/Users/${opts.run_as_uid ?? "<run_as_uid>"}/.knowledge-vaults/${opts.agent_id}`,
+          KNOWLEDGE_VAULT: `/Users/${EPHEMERAL_UID}/.knowledge-vaults/${opts.agent_id}`,
         }
       : {}),
     ...(opts.env ?? {}),
@@ -102,7 +100,7 @@ export function composeBrief(
 
   if (isRemote) {
     notes.push(
-      `REMOTE spawn on machine='${opts.machine}' (ssh_host=${machineRow!.ssh_host}, run_as_uid=${opts.run_as_uid}): ` +
+      `REMOTE spawn on machine='${opts.machine}' (ssh_host=${machineRow!.ssh_host}, run_as_uid=${EPHEMERAL_UID} [inferred]): ` +
       `headless (any placement ignored), key registered against broker_url=${machineRow!.broker_url ?? "<unset>"} (approach A — verified live by the integration gate).`,
     );
   }

@@ -19,7 +19,7 @@ const deps = { orchestrator, wire_url: process.env.WIRE_URL || "http://localhost
 const opts = {
   agent_id: id, roles: ["gate-test"],
   task: "You are fondant-gate-test on the Mini. Once booted, send a wire IPC message to 'fondant' (topic 'ipc') text 'GATE OUTBOUND OK'. Then reply READY and idle.",
-  machine: "mini", run_as_uid: "_ephemeral", project_dir: "/opt/fabrica/fabrica-v3", force_rotate: true,
+  machine: "mini", project_dir: "/opt/fabrica/fabrica-v3", force_rotate: true,
 };
 
 console.log("FULL bridge spawn (sponsor=fondant, machine=mini) — confirm is now AWAITED inside launchAgent...");

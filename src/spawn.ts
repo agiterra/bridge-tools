@@ -64,6 +64,18 @@ export function bareSshHost(sshHost: string): string {
   return sshHost.replace(/^[^@]+@/, "");
 }
 
+/**
+ * The OS account a REMOTE (cross-machine) spawn runs under. This is fleet
+ * ISOLATION POLICY, not an orchestration input: a spawner picks the machine; the
+ * sanctioned isolated identity underneath is fixed and inferred here — it is NOT a
+ * spawn parameter (removed 2026-07-01 per Tim — a caller-supplied uid was a
+ * foot-gun: omitting it silently fell back to the spawner's own uid, which is how
+ * the fleet ended up running engineers as brioche-UID). Per-machine OWNERSHIP of
+ * this policy (inferred + enforced machine-side, not in the orchestrator's process)
+ * lands with crew-service Phase 3.
+ */
+export const EPHEMERAL_UID = "_ephemeral";
+
 /** Runtime dependencies spawn needs but doesn't own. The MCP adapter constructs these once at boot and passes them in. */
 export interface SpawnDeps {
   /** Crew orchestrator instance. Holds the terminal backend + state DB. */
@@ -143,11 +155,9 @@ export async function spawn(
     );
   }
   const isRemote = !!machineRow && machineRow.ssh_host !== "localhost";
-  if (isRemote && !opts.run_as_uid) {
-    throw new Error(
-      `spawn[${new_agent_id}]: machine='${opts.machine}' is remote — run_as_uid is required (the per-UID account to spawn under, e.g. _ephemeral).`,
-    );
-  }
+  // REMOTE spawns run under the sanctioned isolated account (EPHEMERAL_UID),
+  // inferred here — never a caller param. LOCAL spawns run as the spawner (no sudo).
+  const run_as_uid = isRemote ? EPHEMERAL_UID : undefined;
   if (isRemote && !machineRow!.broker_url) {
     throw new Error(
       `spawn[${new_agent_id}]: machine='${opts.machine}' has no broker_url — a cross-machine spawn registers the ephemeral against the remote's broker (approach A). ` +
@@ -250,7 +260,7 @@ export async function spawn(
     // empty — reporting _ephemeral would make the attach's `sudo -u _ephemeral`
     // fail; host comes from the spawner's own env (deps.wire_ssh_host).
     WIRE_SSH_HOST: isRemote ? bareSshHost(machineRow!.ssh_host) : (deps.wire_ssh_host ?? ""),
-    WIRE_RUN_AS_UID: isRemote ? opts.run_as_uid! : "",
+    WIRE_RUN_AS_UID: run_as_uid ?? "",
     KNOWLEDGE_ENRICH_RULES: JSON.stringify({ ipc: { from: [parent_id] } }),
     // Per-ephemeral vault isolation for remote ephemerals ([[plan-recycle-
     // trigger]]): each gets its OWN KNOWLEDGE vault keyed by agent_id so a
@@ -260,7 +270,7 @@ export async function spawn(
     // honors absolute KNOWLEDGE_VAULT over its $CWD/.knowledge default. Full
     // reap-cleanup + worktree-coupling land with the recycle feature.
     // Overridable: opts.env (spread below) wins.
-    ...(isRemote ? { KNOWLEDGE_VAULT: `/Users/${opts.run_as_uid}/.knowledge-vaults/${new_agent_id}` } : {}),
+    ...(isRemote ? { KNOWLEDGE_VAULT: `/Users/${run_as_uid}/.knowledge-vaults/${new_agent_id}` } : {}),
     ...(opts.env ?? {}),
   };
 
@@ -360,12 +370,12 @@ export async function spawn(
       // machine_name (so the reconciler won't false-reap it). Resolved/validated
       // above; launchAgent treats a localhost machine as a normal local spawn.
       machine: opts.machine,
-      runAsUid: opts.run_as_uid,
+      runAsUid: run_as_uid,
     });
   } catch (e) {
     const m = (e as Error)?.message || String(e);
     throw new Error(
-      `spawn[${new_agent_id}]: crew LAUNCH-AGENT step failed (project_dir=${opts.project_dir}, runtime=${opts.runtime}${isRemote ? `, machine='${opts.machine}' run_as_uid='${opts.run_as_uid}' [remote]` : ""}): ` +
+      `spawn[${new_agent_id}]: crew LAUNCH-AGENT step failed (project_dir=${opts.project_dir}, runtime=${opts.runtime}${isRemote ? `, machine='${opts.machine}' run_as_uid='${run_as_uid}' [remote]` : ""}): ` +
       (m && m !== "Error" ? m : "(empty native error from crew launchAgent — likely the terminal backend / screen creation; for remote spawns also check ssh reachability + sudo -u perms)"),
       { cause: e },
     );

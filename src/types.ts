@@ -73,16 +73,15 @@ export interface SpawnOptions {
   /**
    * Cross-machine spawn: name of a registered crew machine (machine_register)
    * to spawn ON. When it names a non-local machine (ssh_host != localhost), the
-   * spawn goes REMOTE — crew creates the agent's screen there via ssh + `sudo -u
-   * <run_as_uid>`, the agent runs headless (no local pane), its WIRE_URL is
-   * pointed at the remote's LOCAL broker, and — approach A — its Wire identity is
+   * spawn goes REMOTE — crew creates the agent's screen there via ssh + sudo into
+   * the machine's sanctioned isolated account (inferred; NOT a caller param — see
+   * EPHEMERAL_UID in spawn.ts), the agent runs headless (no local pane), its
+   * WIRE_URL is pointed at the remote's LOCAL broker, and — approach A — its Wire identity is
    * registered against the remote machine's public `broker_url` (federation does
    * NOT relay registrations, so the key must live on the broker the agent dials).
    * Omit (or name a localhost machine) → unchanged local spawn.
    */
   machine?: string;
-  /** Per-UID account to spawn the remote agent under (e.g. `_ephemeral`). REQUIRED when `machine` is non-local; ignored for local spawns. */
-  run_as_uid?: string;
   /** Git branch the agent works on. Forwarded as the `AGENT_BRANCH` env hint only — bridge does NOT create a worktree. Agents manage their own worktrees (a consumer/agent concern, not the generic stack's). */
   branch?: string;
   /** Optional badge text displayed in the pane's top-right when attached. Forwarded to crew.launchAgent. */
