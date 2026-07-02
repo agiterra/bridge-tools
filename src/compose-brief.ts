@@ -12,7 +12,6 @@
 
 import type { SpawnOptions, BridgeHook } from "./types.js";
 import { paneNear, type PaneNearResult } from "./pane-near.js";
-import { REMOTE_LOCAL_BROKER_URL, bareSshHost, EPHEMERAL_UID } from "./spawn.js";
 import type { Orchestrator } from "@agiterra/crew-tools";
 
 export interface ComposeBriefResult {
@@ -59,17 +58,14 @@ export function composeBrief(
     );
   }
 
-  // Mirror spawn's cross-machine resolution so the dry-run reflects a REMOTE
-  // spawn accurately (registration target, env overrides, forced-headless).
-  const machineRow = opts.machine
-    ? deps.orchestrator.store.getMachine(opts.machine)
-    : undefined;
-  if (opts.machine && !machineRow) {
-    notes.push(`machine '${opts.machine}' is NOT registered — spawn would throw. Register it first with machine_register({ name, ssh_host, broker_url }).`);
-  }
-  const isRemote = !!machineRow && machineRow.ssh_host !== "localhost";
-  if (isRemote && !machineRow!.broker_url) {
-    notes.push(`machine='${opts.machine}' has no broker_url — spawn would throw (approach A registers the ephemeral against the remote's broker). Re-register with broker_url set.`);
+  // Mirror spawn's machine refusal: spawns go through THIS machine's
+  // crew-service; the target account is the SERVICE's decision
+  // (CREW_SVC_SPAWN_UID), never resolvable in a dry-run.
+  if (opts.machine) {
+    notes.push(
+      `machine='${opts.machine}' is no longer supported — spawn would THROW. Spawns go through this machine's ` +
+      `crew-service (crew.agent_spawn), which owns the spawn account and screen; cross-machine spawn RPC lands with wire v1.1.`,
+    );
   }
 
   const env_preview: Record<string, string> = {
@@ -79,38 +75,24 @@ export function composeBrief(
     AGENT_PRIVATE_KEY: "<minted at spawn>",
     AGENT_PARENT: opts.sponsor?.parent_identity ?? deps.parent_agent_id,
     AGENT_ROLES: opts.roles.join(","),
-    // REMOTE: the agent dials its host's local broker; its public URL is the
-    // machine's broker_url (where its key is registered, approach A).
-    WIRE_URL: isRemote ? REMOTE_LOCAL_BROKER_URL : deps.wire_url,
+    WIRE_URL: deps.wire_url,
     // Placement self-report ([[reference-wireattach-clicktoattach]]) — mirrors
-    // spawn(). REMOTE: target machine's BARE host + the sanctioned isolated account
-    // (EPHEMERAL_UID, inferred — not a param). LOCAL: run_as_uid empty (spawn runs
-    // under the spawner's uid); host is the spawner's own env at real spawn time,
+    // spawn(): the bridge contributes its own host + empty uid; when the
+    // crew-service sudos into a spawn account (CREW_SVC_SPAWN_UID) it OVERLAYS
+    // WIRE_RUN_AS_UID/WIRE_SSH_HOST/KNOWLEDGE_VAULT with authoritative values —
     // not resolvable in this dry-run preview.
-    WIRE_SSH_HOST: isRemote ? bareSshHost(machineRow!.ssh_host) : "<spawner WIRE_SSH_HOST>",
-    WIRE_RUN_AS_UID: isRemote ? EPHEMERAL_UID : "",
-    ...(isRemote
-      ? {
-          WIRE_EXTERNAL_URL: machineRow!.broker_url ?? "<machine has no broker_url>",
-          KNOWLEDGE_VAULT: `/Users/${EPHEMERAL_UID}/.knowledge-vaults/${opts.agent_id}`,
-        }
-      : {}),
+    WIRE_SSH_HOST: "<spawner WIRE_SSH_HOST; service overlays for sudo'd spawns>",
+    WIRE_RUN_AS_UID: "<service-stamped when it sudos; else empty>",
     ...(opts.env ?? {}),
   };
 
-  if (isRemote) {
-    notes.push(
-      `REMOTE spawn on machine='${opts.machine}' (ssh_host=${machineRow!.ssh_host}, run_as_uid=${EPHEMERAL_UID} [inferred]): ` +
-      `headless (any placement ignored), key registered against broker_url=${machineRow!.broker_url ?? "<unset>"} (approach A — verified live by the integration gate).`,
-    );
-  }
-
   let placement: PaneNearResult | undefined;
   const p = opts.placement;
-  if (isRemote) {
-    // Remote → forced headless; skip local placement preview entirely.
-    placement = undefined;
-  } else if (p && "detached" in p && p.detached) {
+  notes.push(
+    "Placement applies only when the service spawns under the bridge's own account — a sudo'd spawn " +
+    "(CREW_SVC_SPAWN_UID set, e.g. _ephemeral) is forced headless and placement is ignored.",
+  );
+  if (p && "detached" in p && p.detached) {
     notes.push("Placement is detached — no pane will be created.");
   } else if (p && "near" in p) {
     try {
