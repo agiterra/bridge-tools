@@ -55,10 +55,13 @@ import {
 
 /**
  * How long a crew.agent_spawn RPC may take end-to-end. The service's
- * launchAgent includes screen creation, CC boot, and the dev-channel
- * confirm settle — tens of seconds on slow fleet boxes.
+ * launchAgent includes the credential check, screen creation, CC boot, and
+ * the dev-channel confirm settle — tens of seconds on a quiet box and
+ * 2–3 minutes on a paging one (tortelli, 2026-09-04: the 120 s budget
+ * expired at 16:27:00Z, the service replied at 16:27:27Z, the lane was
+ * live). A timeout here must never read as "not spawned".
  */
-export const SPAWN_RPC_TIMEOUT_MS = 120_000;
+export const SPAWN_RPC_TIMEOUT_MS = 300_000;
 
 /** The shape crew.agent_spawn replies with (crew-service methods.ts). */
 export type CrewSpawnReply = {
@@ -276,6 +279,16 @@ export async function spawn(
     )) as CrewSpawnReply;
   } catch (e) {
     const m = (e as Error)?.message || String(e);
+    if (/timed out/i.test(m)) {
+      // The service does not cancel on the caller's timeout: the spawn is usually still
+      // completing. Say so, and name the check — a re-spawn here burns the name.
+      throw new Error(
+        `spawn[${new_agent_id}]: crew.agent_spawn RPC timed out after ${SPAWN_RPC_TIMEOUT_MS / 1000}s but the service may STILL be completing it ` +
+        `(a paging host spawns in 2–3 min). Do NOT re-spawn: run agent_list (or read crews.db) for '${new_agent_id}' first; ` +
+        `if a row with a screen_pid appears within a few minutes the spawn succeeded and only this reply was lost. dest=${deps.crew_svc_dest}.`,
+        { cause: e },
+      );
+    }
     throw new Error(
       `spawn[${new_agent_id}]: crew.agent_spawn RPC failed (dest=${deps.crew_svc_dest}, project_dir=${opts.project_dir}, runtime=${opts.runtime}): ` +
       (m && m !== "Error" ? m : "(empty error from the spawn RPC)") +
