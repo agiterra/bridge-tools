@@ -160,6 +160,44 @@ export async function spawn(
     );
   }
 
+  // 0c. force_rotate on a name with lane history is REFUSED — use a new name.
+  //     force_rotate replaces the Wire KEYPAIR only. The row survives with its
+  //     cursor, and the thread/session a reused name resumes survives too
+  //     (croquembouche, 2026-08-03: arrived 11.9M tokens past its recycle gate).
+  //     Tim's rule is no routing around a 409 (Fondant → Baguette 643281); a rule
+  //     the caller must remember loses at the moment it applies, so the tool
+  //     enforces it. History = a crews.db agents row (live or stopped) or any
+  //     tombstone (tombstones outlive the reap). force_rotate still passes for an
+  //     id crews.db has never seen — e.g. a retry after a spawn that registered
+  //     the key and then failed at crew.agent_spawn. Persona key rotation is
+  //     register_agent({force_rotate}), which this guard does not touch.
+  //     An unreadable store is UNKNOWN, not "no history": refuse.
+  if (opts.force_rotate === true) {
+    let history: string | null;
+    try {
+      const row = deps.orchestrator.store.getAgent(new_agent_id);
+      const tomb = deps.orchestrator.store.getLatestTombstone(new_agent_id);
+      history = row
+        ? `a crews.db agents row${row.screen_pid ? ` (screen_pid ${row.screen_pid})` : ""}`
+        : tomb
+          ? `a tombstone (last stopped ${new Date(tomb.stopped_at).toISOString()})`
+          : null;
+    } catch (e) {
+      throw new Error(
+        `spawn[${new_agent_id}]: force_rotate REFUSED — could not read crews.db to check '${new_agent_id}' for lane history ` +
+        `(${(e as Error)?.message || String(e)}). Unreadable is not "no history". Use a new name.`,
+        { cause: e },
+      );
+    }
+    if (history) {
+      throw new Error(
+        `spawn[${new_agent_id}]: force_rotate REFUSED — '${new_agent_id}' has lane history: ${history}. ` +
+        `force_rotate rotates the Wire key only; the name's thread, session and Wire cursor survive, so the new lane would ` +
+        `resume the old one. Use a new name. (Rotating a persona's own key is register_agent({force_rotate}), not spawn.)`,
+      );
+    }
+  }
+
   // 1. Run pre_spawn hooks for declared capabilities.
   const applied_capabilities: string[] = [];
   const hook_env: Record<string, string> = {};

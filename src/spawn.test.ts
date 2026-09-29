@@ -55,6 +55,58 @@ describe("spawn — machine targeting refused (run_as_uid path deleted)", () => 
   });
 });
 
+describe("spawn — force_rotate refused on a name with lane history (643281)", () => {
+  // The guard runs before the Wire-identity step, so a deps object carrying only a
+  // store is enough: a refusal never reaches wire_url; a pass fails later, at registration.
+  function storeDeps(store: { getAgent: (id: string) => unknown; getLatestTombstone: (id: string) => unknown }) {
+    return { orchestrator: { store } } as unknown as SpawnDeps;
+  }
+  const none = { getAgent: () => null, getLatestTombstone: () => null };
+
+  test("an agents row (live or stopped) → REFUSED, says use a new name", async () => {
+    const msg = await messageOf(
+      { ...base, agent_id: "eng11-4500", force_rotate: true },
+      storeDeps({ ...none, getAgent: (id) => (id === "eng11-4500" ? { id, screen_pid: 4242 } : null) }),
+    );
+    expect(msg).toContain("force_rotate REFUSED");
+    expect(msg).toContain("agents row (screen_pid 4242)");
+    expect(msg).toContain("Use a new name");
+  });
+
+  test("a tombstone only (reaped lane) → REFUSED, names when it stopped", async () => {
+    const msg = await messageOf(
+      { ...base, agent_id: "fvb-4480", force_rotate: true },
+      storeDeps({ ...none, getLatestTombstone: (id) => (id === "fvb-4480" ? { id, stopped_at: 1790689943041 } : null) }),
+    );
+    expect(msg).toContain("force_rotate REFUSED");
+    expect(msg).toContain("tombstone (last stopped 2026-09-29T");
+    expect(msg).toContain("Use a new name");
+  });
+
+  test("an unreadable store → REFUSED (UNKNOWN is not 'no history')", async () => {
+    const msg = await messageOf(
+      { ...base, force_rotate: true },
+      storeDeps({ ...none, getAgent: () => { throw new Error("SQLITE_CANTOPEN"); } }),
+    );
+    expect(msg).toContain("force_rotate REFUSED");
+    expect(msg).toContain("SQLITE_CANTOPEN");
+  });
+
+  test("a name crews.db has never seen → passes the guard (fails later, at registration)", async () => {
+    const msg = await messageOf({ ...base, agent_id: "virgin-1", force_rotate: true }, storeDeps(none));
+    expect(msg).not.toContain("REFUSED");
+    expect(msg).toContain("WIRE-IDENTITY step failed");
+  });
+
+  test("history but NO force_rotate → the guard does not fire (a plain 409 stays the broker's answer)", async () => {
+    const msg = await messageOf(
+      { ...base, agent_id: "eng11-4500" },
+      storeDeps({ getAgent: () => ({ id: "eng11-4500" }), getLatestTombstone: () => ({ stopped_at: 1 }) }),
+    );
+    expect(msg).not.toContain("REFUSED");
+  });
+});
+
 describe("spawn — crew.agent_spawn RPC path", () => {
   // Stub broker: answers wire-tools registerOrRefresh (POST /agents/register)
   // and sendSignedMessage kickoff (POST /webhooks/:dest/:topic). A dest of
